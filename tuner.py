@@ -123,6 +123,13 @@ def should_ignore(file_path, ignore_patterns):
             return True
     return False
 
+def get_project_metadata(repo_path):
+    repo = Repo(repo_path)
+    project_name = os.path.basename(repo_path)
+    main_branch = repo.active_branch.name
+    languages = set(os.path.splitext(f)[1][1:] for f in os.listdir(repo_path) if os.path.isfile(os.path.join(repo_path, f)))
+    return f"Project: {project_name}\nMain Branch: {main_branch}\nLanguages: {', '.join(languages)}\n\n"
+
 def prepare_dataset(repo_path, tokenizer):
     logger.info("Preparing dataset")
     ignore_patterns = get_gitignore_patterns(repo_path)
@@ -148,11 +155,13 @@ def prepare_dataset(repo_path, tokenizer):
     
     logger.info(f"Total files found: {len(code_files)}")
     
+    project_metadata = get_project_metadata(repo_path)
     code_samples = []
     for file in code_files:
         try:
             with open(file, 'r', encoding='utf-8', errors='ignore') as f:
-                code_samples.append(f.read())
+                content = f.read()
+                code_samples.append(f"{project_metadata}File: {os.path.relpath(file, repo_path)}\n\n{content}")
         except Exception as e:
             logger.error(f"Error reading file {file}: {e}")
     
@@ -177,6 +186,11 @@ def fine_tune_model(repo_path, model, tokenizer):
     try:
         # Prepare the dataset
         train_dataset = prepare_dataset(repo_path, tokenizer)
+        
+        # Add a special token for this project
+        project_token = f"<{os.path.basename(repo_path)}>"
+        tokenizer.add_special_tokens({'additional_special_tokens': [project_token]})
+        model.resize_token_embeddings(len(tokenizer))
         
         # Configure LoRA
         lora_config = LoraConfig(
@@ -234,9 +248,11 @@ def fine_tune_model(repo_path, model, tokenizer):
         logger.error(f"Error during fine-tuning: {e}")
         return None
 
-def generate_report(report_type, model, tokenizer):
+def generate_report(report_type, model, tokenizer, repo_path):
     logger.info(f"Generating {report_type} report")
-    prompt = f"Generate a detailed {report_type} report for the software project you were trained on. Include specific examples and recommendations where applicable."
+    project_metadata = get_project_metadata(repo_path)
+    project_token = f"<{os.path.basename(repo_path)}>"
+    prompt = f"{project_token}\n{project_metadata}\nGenerate a detailed {report_type} report for this software project. Include specific examples and recommendations where applicable."
     
     try:
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
@@ -295,25 +311,26 @@ def select_model(models):
             pass
         print("Invalid choice. Please try again.")
 
-def chat_interface(model, tokenizer):
+def chat_interface(model, tokenizer, repo_path):
     logger.info("Entering chat mode")
     print("\nEntering chat mode. Type 'exit' to return to the main menu.")
+    project_metadata = get_project_metadata(repo_path)
+    project_token = f"<{os.path.basename(repo_path)}>"
+    
     while True:
         user_input = input("You: ")
         if user_input.lower() == 'exit':
             break
         
         try:
-            inputs = tokenizer(user_input, return_tensors="pt", truncation=True, max_length=512)
+            full_prompt = f"{project_token}\n{project_metadata}\nUser: {user_input}\nAI:"
+            inputs = tokenizer(full_prompt, return_tensors="pt", truncation=True, max_length=512)
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
             with torch.no_grad():
                 output = model.generate(**inputs, max_length=1024, num_return_sequences=1)
             response = tokenizer.decode(output[0], skip_special_tokens=True)
-            print(f"AI: {response}")
-        except Exception as e:
-            logger.error(f"Error in chat interface: {e}")
-            print("AI: I'm sorry, I encountered an error while processing your request.")
+            print(f"AI: I'm sorry, I encountered an error while processing your request.")
 
 def main():
     parser = argparse.ArgumentParser(description="AI-powered Code Analysis Tool using CodeGeeX4")
