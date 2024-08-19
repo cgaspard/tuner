@@ -1,0 +1,4 @@
+fine_tuned_models/*
+!fine_tuned_models/.gitkeep
+
+.venv
