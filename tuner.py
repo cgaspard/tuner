@@ -72,33 +72,49 @@ def pull_github_repo(repo_path):
 
 def load_model(model_path=None, use_4bit=False, use_cpu=False):
     """
-    Loads the pre-trained model and tokenizer, optionally using 4-bit quantization or CPU.
+    Loads the pre-trained or fine-tuned model and tokenizer, with handling for 4-bit quantization or CPU.
+    Also handles the resizing of embeddings to match the tokenizer size.
+    Distinguishes between Hugging Face models and locally saved models.
     """
     if model_path is None:
         model_path = MODEL_NAME
     logger.info(f"Attempting to load model: {model_path}")
 
     try:
+        # Check if the model is a Hugging Face model or a local path
+        if os.path.isdir(model_path):
+            # It's a local model
+            logger.debug(f"Loading model from local path: {model_path}")
+        else:
+            # It's a Hugging Face model
+            logger.debug(f"Loading Hugging Face model: {model_path}")
+
         device = torch.device("cpu") if use_cpu else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {device}")
 
-        # Load model with specific parameters
+        # Load tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        logger.debug(f"Tokenizer vocabulary size: {len(tokenizer)}")
+
+        # Load the model with specific parameters
         if use_4bit:
             model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, load_in_4bit=True, device_map="auto")
             model = prepare_model_for_kbit_training(model)
         else:
             model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.float32, low_cpu_mem_usage=True, device_map="auto" if device.type == "cuda" else None)
 
-        if device.type == "cpu":
-            model = model.to(device)
+        # Resize the embedding layer if the tokenizer size does not match the model's embedding layer size
+        model.resize_token_embeddings(len(tokenizer))
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        # Move model to device
+        model = model.to(device)
 
         logger.info("Model and tokenizer loaded successfully")
         return model, tokenizer
     except Exception as e:
         logger.error(f"Error loading model: {e}")
         return None, None
+
 
 def get_gitignore_patterns(repo_path):
     """
@@ -188,9 +204,11 @@ def prepare_dataset(repo_path, tokenizer):
 
     return tokenized_dataset
 
+
 def fine_tune_model(repo_path, model, tokenizer):
     """
     Fine-tunes the model using the prepared dataset.
+    Ensures that the tokenizer and model are saved correctly.
     """
     logger.info("Starting model fine-tuning")
 
@@ -312,7 +330,6 @@ def get_available_models():
     if os.path.exists(FINE_TUNED_MODEL_DIR):
         fine_tuned_models = [os.path.join(FINE_TUNED_MODEL_DIR, d) for d in os.listdir(FINE_TUNED_MODEL_DIR) if os.path.isdir(os.path.join(FINE_TUNED_MODEL_DIR, d))]
         models.extend(sorted(fine_tuned_models, key=os.path.getmtime, reverse=True))
-    logger.debug(f"Available models: {models}")
     return models
 
 def select_model(models):
@@ -382,7 +399,6 @@ def chat_interface(model, tokenizer, repo_path):
         except Exception as e:
             logger.error(f"Error during chat interaction: {e}")
             print("AI: I'm sorry, I encountered an error while processing your request.")
-
 
 def main():
     """
@@ -456,6 +472,7 @@ def main():
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
         logger.error(traceback.format_exc())
+
 
 if __name__ == "__main__":
     main()
